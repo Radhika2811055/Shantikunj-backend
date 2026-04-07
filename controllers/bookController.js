@@ -4,6 +4,7 @@ const Claim = require('../models/Claim')
 const sendMail = require('../config/mailer')
 const { createNotification, createBulkNotifications } = require('../services/notificationService')
 const { logAudit } = require('../services/auditService')
+const { isCloudinaryConfigured, uploadFileToCloudinary, removeLocalFile } = require('../services/cloudinaryService')
 
 const REASSIGNMENT_THRESHOLD = 3
 const DEFAULT_TRANSLATION_INVITE_LANGUAGES = ['English']
@@ -221,25 +222,131 @@ const isValidHttpUrl = (value) => {
 }
 
 const isGoogleDriveLink = (value) => value.includes('drive.google.com')
+const isCloudinaryUrl = (value) => String(value || '').includes('res.cloudinary.com')
 const isDocumentLink = (value) => /\.(pdf|doc|docx|txt)(\?|$)/i.test(value) || isGoogleDriveLink(value)
 const isAudioLink = (value) => /\.(mp3|mp4)(\?|$)/i.test(value) || isGoogleDriveLink(value)
 
-const normalizeAudioUrls = ({ audioUrl, audioUrls }) => {
+const parseCloudinaryMetaFromUrl = (fileUrl) => {
+  try {
+    const parsed = new URL(fileUrl)
+    const parts = parsed.pathname.split('/').filter(Boolean)
+    const uploadIndex = parts.indexOf('upload')
+
+    if (uploadIndex === -1 || uploadIndex + 1 >= parts.length) {
+      return { publicId: null, format: null }
+    }
+
+    const afterUpload = parts.slice(uploadIndex + 1)
+    const withoutVersion = /^v\d+$/.test(afterUpload[0]) ? afterUpload.slice(1) : afterUpload
+    const pathWithExt = withoutVersion.join('/')
+    if (!pathWithExt) {
+      return { publicId: null, format: null }
+    }
+
+    const dotIndex = pathWithExt.lastIndexOf('.')
+    if (dotIndex === -1) {
+      return { publicId: pathWithExt, format: null }
+    }
+
+    return {
+      publicId: pathWithExt.slice(0, dotIndex),
+      format: pathWithExt.slice(dotIndex + 1) || null
+    }
+  } catch (_error) {
+    return { publicId: null, format: null }
+  }
+}
+
+const normalizePayloadFiles = (payload) => {
+  if (!Array.isArray(payload)) return []
+
+  return payload
+    .filter((item) => item && typeof item === 'object')
+    .map((item) => ({
+      fileUrl: typeof item.fileUrl === 'string' ? item.fileUrl.trim() : '',
+      provider: typeof item.provider === 'string' ? item.provider.trim() : null,
+      publicId: typeof item.publicId === 'string' ? item.publicId.trim() : null,
+      resourceType: typeof item.resourceType === 'string' ? item.resourceType.trim() : null,
+      format: typeof item.format === 'string' ? item.format.trim() : null,
+      bytes: Number.isFinite(Number(item.bytes)) ? Number(item.bytes) : null,
+      originalFilename: typeof item.originalFilename === 'string'
+        ? item.originalFilename.trim()
+        : (typeof item.filename === 'string' ? item.filename.trim() : null),
+      uploadedAt: item.uploadedAt ? new Date(item.uploadedAt) : new Date()
+    }))
+    .filter((item) => Boolean(item.fileUrl))
+}
+
+const buildFileMetadata = ({
+  metaSources,
+  validUrls,
+  linkValidator
+}) => {
+  const sourceMeta = metaSources.flatMap((source) => normalizePayloadFiles(source))
+
+  const filteredSourceMeta = sourceMeta.filter((item) => {
+    return isValidHttpUrl(item.fileUrl) && linkValidator(item.fileUrl)
+  })
+
+  const byUrl = new Map()
+
+  for (const item of filteredSourceMeta) {
+    if (!byUrl.has(item.fileUrl)) {
+      byUrl.set(item.fileUrl, {
+        provider: item.provider || (isCloudinaryUrl(item.fileUrl) ? 'cloudinary' : 'external'),
+        publicId: item.publicId || null,
+        fileUrl: item.fileUrl,
+        resourceType: item.resourceType || null,
+        format: item.format || null,
+        bytes: item.bytes,
+        originalFilename: item.originalFilename || null,
+        uploadedAt: item.uploadedAt instanceof Date && !Number.isNaN(item.uploadedAt.getTime())
+          ? item.uploadedAt
+          : new Date()
+      })
+    }
+  }
+
+  for (const url of validUrls) {
+    if (!byUrl.has(url)) {
+      const inferredCloudinaryMeta = isCloudinaryUrl(url)
+        ? parseCloudinaryMetaFromUrl(url)
+        : { publicId: null, format: null }
+
+      byUrl.set(url, {
+        provider: isCloudinaryUrl(url) ? 'cloudinary' : 'external',
+        publicId: inferredCloudinaryMeta.publicId,
+        fileUrl: url,
+        resourceType: null,
+        format: inferredCloudinaryMeta.format,
+        bytes: null,
+        originalFilename: null,
+        uploadedAt: new Date()
+      })
+    }
+  }
+
+  return [...byUrl.values()]
+}
+
+const normalizeAudioUrls = ({ audioUrl, audioUrls, audioFiles }) => {
   const fromArray = Array.isArray(audioUrls) ? audioUrls : []
   const fromSingle = audioUrl ? [audioUrl] : []
+  const fromFileObjects = normalizePayloadFiles(audioFiles).map((item) => item.fileUrl)
 
-  const merged = [...fromArray, ...fromSingle]
+  const merged = [...fromArray, ...fromSingle, ...fromFileObjects]
     .map((item) => (typeof item === 'string' ? item.trim() : ''))
     .filter(Boolean)
 
   return [...new Set(merged)]
 }
 
-const normalizeDocumentUrls = ({ textFileUrl, textFileUrls }) => {
+const normalizeDocumentUrls = ({ textFileUrl, textFileUrls, textFiles }) => {
   const fromArray = Array.isArray(textFileUrls) ? textFileUrls : []
   const fromSingle = textFileUrl ? [textFileUrl] : []
+  const fromFileObjects = normalizePayloadFiles(textFiles).map((item) => item.fileUrl)
 
-  const merged = [...fromArray, ...fromSingle]
+  const merged = [...fromArray, ...fromSingle, ...fromFileObjects]
     .map((item) => (typeof item === 'string' ? item.trim() : ''))
     .filter(Boolean)
 
@@ -447,11 +554,47 @@ const uploadTranslationDocument = async (req, res) => {
       return res.status(400).json({ message: 'Please upload at least one PDF, DOC, DOCX, or TXT file' })
     }
 
-    const uploadedFiles = files.map((item) => ({
-      fileUrl: `${req.protocol}://${req.get('host')}/uploads/translations/${item.filename}`,
-      filename: item.originalname,
-      size: item.size
-    }))
+    let uploadedFiles = []
+
+    if (isCloudinaryConfigured()) {
+      uploadedFiles = await Promise.all(files.map(async (item) => {
+        try {
+          const uploadResult = await uploadFileToCloudinary({
+            filePath: item.path,
+            folder: process.env.CLOUDINARY_TRANSLATION_FOLDER || 'shantikunj/translations',
+            resourceType: 'raw'
+          })
+
+          return {
+            fileUrl: uploadResult.secure_url,
+            filename: item.originalname,
+            originalFilename: item.originalname,
+            size: uploadResult.bytes,
+            bytes: uploadResult.bytes,
+            provider: 'cloudinary',
+            publicId: uploadResult.public_id,
+            resourceType: uploadResult.resource_type,
+            format: uploadResult.format || null,
+            uploadedAt: uploadResult.created_at || new Date().toISOString()
+          }
+        } finally {
+          await removeLocalFile(item.path)
+        }
+      }))
+    } else {
+      uploadedFiles = files.map((item) => ({
+        fileUrl: `${req.protocol}://${req.get('host')}/uploads/translations/${item.filename}`,
+        filename: item.originalname,
+        originalFilename: item.originalname,
+        size: item.size,
+        bytes: item.size,
+        provider: 'local',
+        publicId: null,
+        resourceType: 'raw',
+        format: null,
+        uploadedAt: new Date().toISOString()
+      }))
+    }
 
     return res.status(200).json({
       message: uploadedFiles.length === 1
@@ -472,11 +615,47 @@ const uploadAudioFile = async (req, res) => {
       return res.status(400).json({ message: 'Please upload at least one MP3 or MP4 file' })
     }
 
-    const uploadedFiles = files.map((file) => ({
-      fileUrl: `${req.protocol}://${req.get('host')}/uploads/audio/${file.filename}`,
-      filename: file.originalname,
-      size: file.size
-    }))
+    let uploadedFiles = []
+
+    if (isCloudinaryConfigured()) {
+      uploadedFiles = await Promise.all(files.map(async (file) => {
+        try {
+          const uploadResult = await uploadFileToCloudinary({
+            filePath: file.path,
+            folder: process.env.CLOUDINARY_AUDIO_FOLDER || 'shantikunj/audio',
+            resourceType: 'video'
+          })
+
+          return {
+            fileUrl: uploadResult.secure_url,
+            filename: file.originalname,
+            originalFilename: file.originalname,
+            size: uploadResult.bytes,
+            bytes: uploadResult.bytes,
+            provider: 'cloudinary',
+            publicId: uploadResult.public_id,
+            resourceType: uploadResult.resource_type,
+            format: uploadResult.format || null,
+            uploadedAt: uploadResult.created_at || new Date().toISOString()
+          }
+        } finally {
+          await removeLocalFile(file.path)
+        }
+      }))
+    } else {
+      uploadedFiles = files.map((file) => ({
+        fileUrl: `${req.protocol}://${req.get('host')}/uploads/audio/${file.filename}`,
+        filename: file.originalname,
+        originalFilename: file.originalname,
+        size: file.size,
+        bytes: file.size,
+        provider: 'local',
+        publicId: null,
+        resourceType: 'video',
+        format: null,
+        uploadedAt: new Date().toISOString()
+      }))
+    }
 
     return res.status(200).json({
       message: 'Audio uploaded successfully',
@@ -492,9 +671,14 @@ const uploadAudioFile = async (req, res) => {
 const submitTranslation = async (req, res) => {
   try {
     const { bookId, versionId } = req.params
-    const { textFileUrl, textFileUrls } = req.body
+    const { textFileUrl, textFileUrls, textFiles, textFileMeta, textFilesMeta } = req.body
 
-    const validDocumentUrls = normalizeDocumentUrls({ textFileUrl, textFileUrls })
+    const validDocumentUrls = normalizeDocumentUrls({ textFileUrl, textFileUrls, textFiles })
+    const documentMeta = buildFileMetadata({
+      metaSources: [textFiles, textFileMeta, textFilesMeta],
+      validUrls: validDocumentUrls,
+      linkValidator: isDocumentLink
+    })
 
     if (validDocumentUrls.length === 0) {
       return res.status(400).json({
@@ -518,8 +702,9 @@ const submitTranslation = async (req, res) => {
     }
 
     version.textStatus = 'translation_submitted'
-  version.textFileUrl = validDocumentUrls[0]
-  version.textFileUrls = validDocumentUrls
+    version.textFileUrl = validDocumentUrls[0]
+    version.textFileUrls = validDocumentUrls
+    version.textFileMeta = documentMeta
     version.currentStage = 'checking'
     version.isLocked = false
     version.lockedBy = null
@@ -948,8 +1133,13 @@ const spocReviewText = async (req, res) => {
 const submitAudio = async (req, res) => {
   try {
     const { bookId, versionId } = req.params
-    const { audioUrl, audioUrls } = req.body
-    const normalizedAudioUrls = normalizeAudioUrls({ audioUrl, audioUrls })
+    const { audioUrl, audioUrls, audioFiles, audioFileMeta, audioFilesMeta } = req.body
+    const normalizedAudioUrls = normalizeAudioUrls({ audioUrl, audioUrls, audioFiles })
+    const audioMeta = buildFileMetadata({
+      metaSources: [audioFiles, audioFileMeta, audioFilesMeta],
+      validUrls: normalizedAudioUrls,
+      linkValidator: isAudioLink
+    })
 
     if (normalizedAudioUrls.length === 0) {
       return res.status(400).json({
@@ -981,6 +1171,7 @@ const submitAudio = async (req, res) => {
     version.audioStatus = 'audio_submitted'
     version.audioUrl = normalizedAudioUrls[0]
     version.audioFiles = normalizedAudioUrls
+    version.audioFileMeta = audioMeta
     version.currentStage = 'audio_checking'
     version.isLocked = false
     version.lockedBy = null

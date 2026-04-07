@@ -43,6 +43,15 @@ Optional for Google login:
 - `GOOGLE_CLIENT_SECRET`
 - `GOOGLE_CALLBACK_URL`
 
+Optional for Cloudinary-backed uploads (recommended):
+
+- `CLOUDINARY_URL` (alternative single-string format)
+- `CLOUDINARY_CLOUD_NAME`
+- `CLOUDINARY_API_KEY`
+- `CLOUDINARY_API_SECRET`
+- `CLOUDINARY_TRANSLATION_FOLDER` (default: `shantikunj/translations`)
+- `CLOUDINARY_AUDIO_FOLDER` (default: `shantikunj/audio`)
+
 Optional workflow behavior:
 
 - `TRANSLATION_INVITE_LANGUAGES`
@@ -76,10 +85,15 @@ All routes are mounted under `/api`.
 
 ## Uploads
 
-- Static files served from `/uploads`
-- Folder locations:
+- If Cloudinary env vars are configured, uploads are sent to Cloudinary and response includes metadata (`publicId`, `resourceType`, `bytes`, etc.).
+- If Cloudinary is not configured, backend falls back to local disk uploads.
+- Static local files are served from `/uploads`.
+- Local folder locations:
   - `uploads/translations`
   - `uploads/audio`
+- Book version records persist file URLs plus metadata in MongoDB fields:
+  - `languageVersions.textFileMeta`
+  - `languageVersions.audioFileMeta`
 
 ## Scheduler
 

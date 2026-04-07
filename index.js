@@ -4,6 +4,7 @@ const cors = require('cors')
 const dotenv = require('dotenv')
 const path = require('path')
 const cron = require('node-cron')
+const { MongoMemoryServer } = require('mongodb-memory-server')
 const sendFollowUps = require('./jobs/followUpJob')
 const session = require('express-session')
 const { protect, authorise } = require('./middleware/authMiddleware')
@@ -13,6 +14,7 @@ const { uploadAudioFile } = require('./controllers/bookController')
 dotenv.config({ path: path.join(__dirname, '.env') })
 
 const passport = require('./config/passport')
+const PORT = Number(process.env.PORT) || 5000
 
 const app = express()
 app.use(session({
@@ -72,12 +74,33 @@ cron.schedule('0 9 * * *', () => {
 })
 
 
-// Connect to MongoDB and start server
-mongoose.connect(process.env.MONGO_URI)
-  .then(() => {
+const startServer = async () => {
+  try {
+    if (!process.env.MONGO_URI) {
+      throw new Error('MONGO_URI is not set')
+    }
+
+    await mongoose.connect(process.env.MONGO_URI)
     console.log('MongoDB connected!')
-    app.listen(5000, () => {
-      console.log('Server running on port 5000')
-    })
+  } catch (err) {
+    if (process.env.NODE_ENV === 'production') {
+      console.log('Connection error:', err)
+      process.exit(1)
+    }
+
+    console.warn('Primary MongoDB connection failed. Falling back to in-memory MongoDB for development.')
+    const memoryServer = await MongoMemoryServer.create()
+    const memoryUri = memoryServer.getUri()
+    await mongoose.connect(memoryUri)
+    console.log('In-memory MongoDB connected!')
+  }
+
+  app.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`)
   })
-  .catch((err) => console.log('Connection error:', err))
+}
+
+startServer().catch((err) => {
+  console.error('Fatal startup error:', err)
+  process.exit(1)
+})

@@ -144,12 +144,38 @@ const languageVersionSchema = new mongoose.Schema({
     type: [String],
     default: []
   },
+  audioFileMeta: {
+    type: [{
+      provider: { type: String, default: 'cloudinary' },
+      publicId: { type: String, default: null },
+      fileUrl: { type: String, required: true },
+      resourceType: { type: String, default: null },
+      format: { type: String, default: null },
+      bytes: { type: Number, default: null },
+      originalFilename: { type: String, default: null },
+      uploadedAt: { type: Date, default: Date.now }
+    }],
+    default: []
+  },
   textFileUrl: {
     type: String,
     default: null
   },
   textFileUrls: {
     type: [String],
+    default: []
+  },
+  textFileMeta: {
+    type: [{
+      provider: { type: String, default: 'cloudinary' },
+      publicId: { type: String, default: null },
+      fileUrl: { type: String, required: true },
+      resourceType: { type: String, default: null },
+      format: { type: String, default: null },
+      bytes: { type: Number, default: null },
+      originalFilename: { type: String, default: null },
+      uploadedAt: { type: Date, default: Date.now }
+    }],
     default: []
   },
   reassignmentCount: {
