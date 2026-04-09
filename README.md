@@ -30,6 +30,56 @@ Core modules:
 - Support requests
 - Audit logs
 
+## 2.1) New Book Email Announcement (All Registered Users)
+
+When an admin calls `POST /api/books`, the backend now does two email actions:
+
+- Translation task invite emails (existing flow)
+- New-book announcement email to all approved active users (excluding admins by default)
+
+You can pass a custom template per request using `announcementTemplate`:
+
+```json
+{
+  "title": "Example Book",
+  "bookNumber": "BK-101",
+  "description": "Book summary",
+  "announcementTemplate": {
+    "subject": "New Book Live: {{bookTitle}}",
+    "heading": "Fresh Addition: {{bookTitle}}",
+    "intro": "Namaste {{name}}, a new title has been added.",
+    "body": "Book number {{bookNumber}} is ready in LMS.",
+    "ctaLabel": "Open LMS",
+    "ctaUrl": "http://localhost:5173"
+  }
+}
+```
+
+Supported placeholders in template fields:
+
+- `{{name}}`
+- `{{bookTitle}}`
+- `{{bookNumber}}`
+- `{{bookDescription}}`
+- `{{announcedBy}}`
+- `{{ctaUrl}}`
+
+If you want full custom HTML, send `announcementTemplate.html` and keep placeholders in that HTML.
+
+Optional environment variables:
+
+- `FRONTEND_URL`
+- `NEW_BOOK_MAIL_SUBJECT`
+- `NEW_BOOK_MAIL_HEADING`
+- `NEW_BOOK_MAIL_INTRO`
+- `NEW_BOOK_MAIL_BODY`
+- `NEW_BOOK_MAIL_FOOTER`
+- `NEW_BOOK_MAIL_CTA_LABEL`
+- `NEW_BOOK_MAIL_HTML_TEMPLATE`
+- `NEW_BOOK_MAIL_BATCH_SIZE` (default `20`)
+- `NEW_BOOK_MAIL_BATCH_DELAY_MS` (default `700`)
+- `NEW_BOOK_MAIL_INCLUDE_ADMINS` (`true` or `false`, default `false`)
+
 ## 3) Roles and Responsibilities
 
 - `admin`: user approvals, book creation, final publish, global management

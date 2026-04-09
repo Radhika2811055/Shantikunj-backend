@@ -7,6 +7,7 @@ const { logAudit } = require('../services/auditService')
 const { isCloudinaryConfigured, uploadFileToCloudinary, removeLocalFile } = require('../services/cloudinaryService')
 const { normalizeRole, getRoleQueryValues } = require('../utils/roleUtils')
 const { notifyAllTranslators } = require('../services/translatorNotificationService')
+const { notifyRegisteredUsersAboutNewBook } = require('../services/bookAnnouncementService')
 
 const REASSIGNMENT_THRESHOLD = 3
 const DEFAULT_TRANSLATION_INVITE_LANGUAGES = ['English']
@@ -419,7 +420,7 @@ const hasConflictingActiveCheckingClaim = async (checkerId, exclude = null) => {
 // ── Add a new book (admin only) ────────────────────────────
 const addBook = async (req, res) => {
   try {
-    const { title, bookNumber, description } = req.body
+    const { title, bookNumber, description, announcementTemplate } = req.body
 
     const existing = await Book.findOne({ bookNumber })
     if (existing) {
@@ -449,7 +450,19 @@ const addBook = async (req, res) => {
       console.error('Translation invite dispatch error:', mailError.message)
     }
 
-    res.status(201).json({ message: 'Book added successfully', book, inviteSummary })
+    // Broadcast new-book announcement to all approved active users.
+    let announcementSummary = null
+    try {
+      announcementSummary = await notifyRegisteredUsersAboutNewBook({
+        book,
+        template: announcementTemplate,
+        announcedBy: req.user?.name || 'Admin Team'
+      })
+    } catch (mailError) {
+      console.error('New-book announcement dispatch error:', mailError.message)
+    }
+
+    res.status(201).json({ message: 'Book added successfully', book, inviteSummary, announcementSummary })
 
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message })
