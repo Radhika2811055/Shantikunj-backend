@@ -5,6 +5,8 @@ const sendMail = require('../config/mailer')
 const { createNotification, createBulkNotifications } = require('../services/notificationService')
 const { logAudit } = require('../services/auditService')
 const { isCloudinaryConfigured, uploadFileToCloudinary, removeLocalFile } = require('../services/cloudinaryService')
+const { normalizeRole, getRoleQueryValues } = require('../utils/roleUtils')
+const { notifyAllTranslators } = require('../services/translatorNotificationService')
 
 const REASSIGNMENT_THRESHOLD = 3
 const DEFAULT_TRANSLATION_INVITE_LANGUAGES = ['English']
@@ -466,6 +468,48 @@ const getAllBooks = async (req, res) => {
   }
 }
 
+const getLandingAudiobooks = async (req, res) => {
+  try {
+    const limit = Math.min(60, Math.max(1, Number(req.query.limit) || 12))
+    const language = String(req.query.language || '').trim()
+
+    const books = await Book.find({ status: { $ne: 'on_hold' } })
+      .select('title bookNumber description languageVersions updatedAt')
+      .sort({ updatedAt: -1 })
+
+    const items = []
+    for (const book of books) {
+      for (const version of book.languageVersions || []) {
+        if (version.audioStatus !== 'published') continue
+        if (language && version.language !== language) continue
+
+        items.push({
+          bookId: book._id,
+          versionId: version._id,
+          title: book.title,
+          bookNumber: book.bookNumber,
+          description: book.description,
+          language: version.language,
+          audioUrl: version.audioUrl,
+          audioFiles: version.audioFiles || [],
+          publishedAt: version.updatedAt || book.updatedAt || null
+        })
+      }
+    }
+
+    const sorted = items
+      .sort((a, b) => new Date(b.publishedAt || 0) - new Date(a.publishedAt || 0))
+      .slice(0, limit)
+
+    return res.status(200).json({
+      items: sorted,
+      count: sorted.length
+    })
+  } catch (error) {
+    return res.status(500).json({ message: 'Server error', error: error.message })
+  }
+}
+
 // ── Get single book ────────────────────────────────────────
 const getBookById = async (req, res) => {
   try {
@@ -488,6 +532,7 @@ const getBookById = async (req, res) => {
 const getMyAssignedBooks = async (req, res) => {
   try {
     const userId = req.user._id
+    const userRole = normalizeRole(req.user.role)
     let query = {
       $or: [
         { 'languageVersions.assignedTranslator': userId },
@@ -497,7 +542,7 @@ const getMyAssignedBooks = async (req, res) => {
       ]
     }
 
-    if (req.user.role === 'translator') {
+    if (userRole === 'translator') {
       query = {
         languageVersions: {
           $elemMatch: {
@@ -507,7 +552,7 @@ const getMyAssignedBooks = async (req, res) => {
           }
         }
       }
-    } else if (req.user.role === 'checker') {
+    } else if (userRole === 'checker') {
       query = {
         languageVersions: {
           $elemMatch: {
@@ -517,7 +562,7 @@ const getMyAssignedBooks = async (req, res) => {
           }
         }
       }
-    } else if (req.user.role === 'recorder') {
+    } else if (userRole === 'recorder') {
       query = {
         languageVersions: {
           $elemMatch: {
@@ -527,7 +572,7 @@ const getMyAssignedBooks = async (req, res) => {
           }
         }
       }
-    } else if (req.user.role === 'audio_checker') {
+    } else if (userRole === 'audio_checker') {
       query = {
         languageVersions: {
           $elemMatch: {
@@ -1198,7 +1243,7 @@ const submitAudio = async (req, res) => {
     // Notify audio checkers for audio verification
     const checkers = await User.find({
       language: version.language,
-      role: 'audio_checker',
+      role: { $in: getRoleQueryValues('audio_checker') },
       status: 'approved'
     })
 
@@ -1473,12 +1518,33 @@ const spocAudioApproval = async (req, res) => {
     }
 
     if (normalizedDecision === 'approved') {
+      const reviewOpenedAt = new Date()
+
       version.audioStatus = 'audio_approved'
       version.currentStage = 'final_verification'
+      version.openForTranslatorReview = true
+      version.translatorReviewOpenedAt = reviewOpenedAt
       version.feedback = null
       version.isBlockedBySpoc = false
       version.blockerNote = null
       await book.save()
+
+      const translatorBroadcastSummary = await notifyAllTranslators({
+        subject: `Translator Review Open - ${book.title} (${version.language})`,
+        title: 'Audiobook open for translator review',
+        message: `${book.title} (${version.language}) is now open for review. All translators can submit review inputs before the feedback deadline.`,
+        metadata: {
+          scope: 'all_translators',
+          stage: 'translator_review',
+          bookId: book._id,
+          versionId: version._id,
+          language: version.language,
+          feedbackDeadline: version.feedbackDeadline || null,
+          openedAt: reviewOpenedAt
+        },
+        ctaUrl: process.env.FRONTEND_URL || 'http://localhost:5173',
+        ctaLabel: 'Open LMS Dashboard'
+      })
 
       // Send approved audio to admin publish queue.
       const admins = await User.find({
@@ -1542,8 +1608,9 @@ const spocAudioApproval = async (req, res) => {
       })
 
       return res.status(200).json({
-        message: `Audio approved and sent to admin publish queue (${admins.length} admins notified).`,
-        version
+        message: `Audio approved, opened for translator review, and sent to admin publish queue (${admins.length} admins notified, ${translatorBroadcastSummary.emailsSent}/${translatorBroadcastSummary.recipients} translator emails sent).`,
+        version,
+        translatorBroadcastSummary
       })
     }
 
@@ -1554,6 +1621,7 @@ const spocAudioApproval = async (req, res) => {
       version.reassignmentCount += 1
       version.audioRejectionCount += 1
       version.feedbackDeadline = null
+      version.openForTranslatorReview = false
       version.assignedAudioChecker = null
       version.audioCheckerDeadline = null
       await book.save()
@@ -1646,6 +1714,7 @@ const publishBook = async (req, res) => {
 
     version.audioStatus = 'published'
     version.currentStage = 'published'
+    version.openForTranslatorReview = false
     version.isLocked = false
     await book.save()
 
@@ -1762,6 +1831,121 @@ const updateAudioStatus = async (req, res) => {
   }
 }
 
+const assignTranslatorManually = async (req, res) => {
+  try {
+    const { bookId, versionId } = req.params
+    const { translatorId, deadline } = req.body
+
+    const book = await Book.findById(bookId)
+    if (!book) return res.status(404).json({ message: 'Book not found' })
+
+    const version = book.languageVersions.id(versionId)
+    if (!version) return res.status(404).json({ message: 'Language version not found' })
+
+    if (req.user.role === 'spoc' && req.user.language !== version.language) {
+      return res.status(403).json({ message: `You can only assign for: ${req.user.language}` })
+    }
+
+    if (version.assignedTranslator || version.isLocked) {
+      return res.status(400).json({ message: 'This translation task is already claimed/assigned' })
+    }
+
+    if (version.currentStage !== 'translation' || !['not_started', 'translation_in_progress'].includes(version.textStatus)) {
+      return res.status(400).json({ message: 'This version is not eligible for manual translator assignment' })
+    }
+
+    const translator = await User.findById(translatorId)
+    if (!translator || normalizeRole(translator.role) !== 'translator' || translator.status !== 'approved' || !translator.isActive) {
+      return res.status(400).json({ message: 'Selected user is not an active approved translator' })
+    }
+
+    if (translator.language !== version.language) {
+      return res.status(400).json({ message: 'Selected translator must belong to the same language' })
+    }
+
+    const parsedDeadline = deadline ? new Date(deadline) : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
+    if (Number.isNaN(parsedDeadline.getTime()) || parsedDeadline <= new Date()) {
+      return res.status(400).json({ message: 'deadline must be a valid future datetime' })
+    }
+
+    await Claim.updateMany(
+      {
+        book: book._id,
+        language: version.language,
+        claimType: 'translation',
+        status: 'active'
+      },
+      { status: 'released' }
+    )
+
+    const daysCommitted = Math.max(1, Math.ceil((parsedDeadline - new Date()) / (1000 * 60 * 60 * 24)))
+    await Claim.create({
+      book: book._id,
+      language: version.language,
+      claimedBy: translator._id,
+      claimType: 'translation',
+      daysCommitted,
+      deadline: parsedDeadline,
+      status: 'active'
+    })
+
+    version.assignedTranslator = translator._id
+    version.translatorDeadline = parsedDeadline
+    version.textStatus = 'translation_in_progress'
+    version.currentStage = 'translation'
+    version.isLocked = true
+    version.lockedBy = translator._id
+    version.lockedUntil = parsedDeadline
+    await book.save()
+
+    await createNotification({
+      userId: translator._id,
+      type: 'task',
+      title: 'Translation task assigned by SPOC',
+      message: `${book.title} (${version.language}) has been manually assigned to you for translation.`,
+      metadata: { bookId: book._id, versionId: version._id }
+    })
+
+    await sendMail({
+      to: translator.email,
+      subject: `Translation Task Assigned - ${book.title} (${version.language})`,
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 600px;">
+          <h2 style="color: #1D9E75;">Shantikunj Audiobooks LMS</h2>
+          <p>Pranam <strong>${translator.name}</strong>,</p>
+          <p>You have been assigned a translation task by SPOC/Admin.</p>
+          <div style="background: #f5f5f5; padding: 16px; border-radius: 8px; margin: 16px 0;">
+            <strong>Book:</strong> ${book.title}<br/>
+            <strong>Language:</strong> ${version.language}<br/>
+            <strong>Deadline:</strong> ${parsedDeadline.toLocaleString()}
+          </div>
+          <a href="${process.env.FRONTEND_URL || 'http://localhost:5173'}"
+             style="background: #1D9E75; color: white; padding: 12px 24px;
+                    text-decoration: none; border-radius: 6px; display: inline-block;">
+            Open LMS Dashboard
+          </a>
+        </div>
+      `
+    })
+
+    await logAudit({
+      req,
+      action: 'translator_assigned_manually',
+      entityType: 'book_version',
+      entityId: version._id,
+      book: book._id,
+      versionId: version._id,
+      language: version.language,
+      toState: 'translation_in_progress',
+      metadata: { translatorId: translator._id, deadline: parsedDeadline }
+    })
+
+    return res.status(200).json({ message: 'Book version assigned to translator', version })
+  } catch (error) {
+    return res.status(500).json({ message: 'Server error', error: error.message })
+  }
+}
+
 // ── Assign to checker (admin/spoc) ─────────────────────────
 const assignToChecker = async (req, res) => {
   try {
@@ -1779,7 +1963,7 @@ const assignToChecker = async (req, res) => {
     }
 
     const checker = await User.findById(checkerId)
-    if (!checker || checker.role !== 'checker' || checker.status !== 'approved' || !checker.isActive) {
+    if (!checker || normalizeRole(checker.role) !== 'checker' || checker.status !== 'approved' || !checker.isActive) {
       return res.status(400).json({ message: 'Selected user is not an active approved checker' })
     }
 
@@ -1917,7 +2101,7 @@ const reassignAfterRejections = async (req, res) => {
         })
       }
 
-      if (newAssignee.role !== 'checker') {
+      if (normalizeRole(newAssignee.role) !== 'checker') {
         return res.status(400).json({ message: 'Selected user is not a checker' })
       }
 
@@ -2028,9 +2212,11 @@ const reassignAfterRejections = async (req, res) => {
 module.exports = {
   addBook,
   getAllBooks,
+  getLandingAudiobooks,
   getBookById,
   uploadTranslationDocument,
   uploadAudioFile,
+  assignTranslatorManually,
   assignToChecker,
   reassignAfterRejections,
   setSpocBlocker,

@@ -5,9 +5,11 @@ const { uploadTranslationDoc, uploadAudioFile: uploadAudioFileMiddleware } = req
 const {
   addBook,
   getAllBooks,
+  getLandingAudiobooks,
   getBookById,
   uploadTranslationDocument,
   uploadAudioFile,
+  assignTranslatorManually,
   assignToChecker,
   reassignAfterRejections,
   setSpocBlocker,
@@ -49,10 +51,14 @@ const handleTranslationUpload = (req, res, next) => {
   })
 }
 
+// Public landing-page feed for published audiobooks.
+router.get('/landing/audiobooks', getLandingAudiobooks)
+
 router.use(protect)
 
 // Admin only
 router.post('/', authorise('admin'), addBook)
+router.put('/:bookId/versions/:versionId/assign-translator', authorise('admin', 'spoc'), assignTranslatorManually)
 router.put('/:bookId/versions/:versionId/assign', authorise('admin', 'spoc'), assignToChecker)
 router.put('/:bookId/versions/:versionId/reassign', authorise('admin', 'spoc'), reassignAfterRejections)
 router.put('/:bookId/versions/:versionId/blocker', authorise('spoc'), setSpocBlocker)
@@ -78,6 +84,7 @@ router.post('/:bookId/versions/:versionId/submit-translation', authorise('transl
 
 // Checker submits vetted text
 router.post('/:bookId/versions/:versionId/submit-vetted-text', authorise('checker'), submitVettedText)
+router.post('/:bookId/versions/:versionId/submit-text-vetter-review', authorise('checker'), submitVettedText)
 
 // SPOC reviews text
 router.put('/:bookId/versions/:versionId/spoc-review', authorise('spoc'), spocReviewText)
@@ -88,6 +95,7 @@ router.post('/:bookId/versions/:versionId/submit-audio', authorise('recorder'), 
 
 // Audio checker submits audio review
 router.post('/:bookId/versions/:versionId/submit-audio-review', authorise('audio_checker'), submitAudioReview)
+router.post('/:bookId/versions/:versionId/submit-audio-vetter-review', authorise('audio_checker'), submitAudioReview)
 
 // SPOC final audio approval
 router.put('/:bookId/versions/:versionId/spoc-audio-approval', authorise('spoc'), spocAudioApproval)

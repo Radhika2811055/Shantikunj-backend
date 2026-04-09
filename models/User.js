@@ -27,12 +27,12 @@ const userSchema = new mongoose.Schema({
   },
   role: {
     type: String,
-    enum: ['admin', 'spoc', 'translator', 'checker', 'audio_checker', 'recorder', 'regional_team', 'pending'],
+    enum: ['admin', 'spoc', 'translator', 'checker', 'text_vetter', 'audio_checker', 'audio_vetter', 'recorder', 'regional_team', 'pending'],
     default: 'pending'   // no role until admin assigns
   },
   requestedRole: {
     type: String,
-    enum: ['spoc', 'translator', 'checker', 'audio_checker', 'recorder', 'regional_team', null],
+    enum: ['spoc', 'translator', 'checker', 'text_vetter', 'audio_checker', 'audio_vetter', 'recorder', 'regional_team', null],
     default: null
   },
   language: {

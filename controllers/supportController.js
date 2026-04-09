@@ -1,7 +1,78 @@
 const SupportRequest = require('../models/SupportRequest')
+const SupportContact = require('../models/SupportContact')
 const User = require('../models/User')
 const { createBulkNotifications } = require('../services/notificationService')
 const { logAudit } = require('../services/auditService')
+
+const getSupportContactInfo = async (_req, res) => {
+  try {
+    const contact = await SupportContact.findOne().sort({ updatedAt: -1 })
+
+    return res.status(200).json({
+      supportContact: contact || {
+        name: null,
+        email: null,
+        phone: null,
+        whatsapp: null,
+        workingHours: null,
+        note: 'Support contact details will be configured by admin.'
+      }
+    })
+  } catch (error) {
+    return res.status(500).json({ message: 'Server error', error: error.message })
+  }
+}
+
+const upsertSupportContactInfo = async (req, res) => {
+  try {
+    const {
+      name,
+      email,
+      phone,
+      whatsapp,
+      workingHours,
+      note
+    } = req.body || {}
+
+    const payload = {
+      name: name || null,
+      email: email || null,
+      phone: phone || null,
+      whatsapp: whatsapp || null,
+      workingHours: workingHours || null,
+      note: note || null,
+      updatedBy: req.user._id
+    }
+
+    const existing = await SupportContact.findOne().sort({ updatedAt: -1 })
+    let supportContact = null
+
+    if (existing) {
+      existing.set(payload)
+      supportContact = await existing.save()
+    } else {
+      supportContact = await SupportContact.create(payload)
+    }
+
+    await logAudit({
+      req,
+      action: 'support_contact_updated',
+      entityType: 'support_request',
+      entityId: supportContact._id,
+      metadata: {
+        hasEmail: Boolean(supportContact.email),
+        hasPhone: Boolean(supportContact.phone)
+      }
+    })
+
+    return res.status(200).json({
+      message: 'Support contact information updated successfully',
+      supportContact
+    })
+  } catch (error) {
+    return res.status(500).json({ message: 'Server error', error: error.message })
+  }
+}
 
 const createSupportRequest = async (req, res) => {
   try {
@@ -145,6 +216,8 @@ const updateSupportRequestStatus = async (req, res) => {
 }
 
 module.exports = {
+  getSupportContactInfo,
+  upsertSupportContactInfo,
   createSupportRequest,
   getMySupportRequests,
   getSupportRequestsForManagers,

@@ -4,6 +4,8 @@ const User = require('../models/User')
 const sendMail = require('../config/mailer')
 const { createNotification, createBulkNotifications } = require('../services/notificationService')
 const { logAudit } = require('../services/auditService')
+const { notifyAllTranslators: broadcastToAllTranslators } = require('../services/translatorNotificationService')
+const { normalizeRole, getRoleQueryValues } = require('../utils/roleUtils')
 
 const CLAIM_TO_ROLE = {
   translation: 'translator',
@@ -14,9 +16,9 @@ const CLAIM_TO_ROLE = {
 
 const STAGE_LABELS = {
   translation: 'Translation',
-  checking: 'Text Verification',
+  checking: 'Text Vetter Review',
   audio: 'Audio Generation',
-  audio_check: 'Audio Verification'
+  audio_check: 'Audio Vetter Review'
 }
 
 const resetVersionForExpiredClaim = (version, claimType) => {
@@ -183,7 +185,7 @@ const sendInterestEmail = async (req, res) => {
 
     const teamMembers = await User.find({
       language,
-      role: targetRole,
+      role: { $in: getRoleQueryValues(targetRole) },
       status: 'approved',
       isActive: true
     }).select('name email')
@@ -270,6 +272,53 @@ const sendInterestEmail = async (req, res) => {
   }
 }
 
+const notifyAllTranslatorsForBook = async (req, res) => {
+  try {
+    const { bookId } = req.params
+    const { subject, title, message } = req.body || {}
+
+    const book = await Book.findById(bookId)
+    if (!book) return res.status(404).json({ message: 'Book not found' })
+
+    const dispatchTitle = (title || '').trim() || `Review Open: ${book.title}`
+    const dispatchMessage = (message || '').trim() || `${book.title} is now open for translator review. Please review and share your feedback in LMS.`
+    const dispatchSubject = (subject || '').trim() || `Translator Review Open - ${book.title}`
+
+    const summary = await broadcastToAllTranslators({
+      subject: dispatchSubject,
+      title: dispatchTitle,
+      message: dispatchMessage,
+      metadata: {
+        scope: 'all_translators',
+        bookId: book._id
+      },
+      ctaUrl: process.env.FRONTEND_URL || 'http://localhost:5173',
+      ctaLabel: 'Open LMS Dashboard'
+    })
+
+    await logAudit({
+      req,
+      action: 'all_translators_notified',
+      entityType: 'book_version',
+      entityId: book._id,
+      book: book._id,
+      note: `All translators notified for ${book.title}`,
+      metadata: {
+        recipients: summary.recipients,
+        emailsSent: summary.emailsSent,
+        emailsFailed: summary.emailsFailed.length
+      }
+    })
+
+    return res.status(200).json({
+      message: 'Notify all translators completed',
+      summary
+    })
+  } catch (error) {
+    return res.status(500).json({ message: 'Server error', error: error.message })
+  }
+}
+
 // ── User claims a book version ─────────────────────────────
 const claimBook = async (req, res) => {
   try {
@@ -282,15 +331,17 @@ const claimBook = async (req, res) => {
       return res.status(400).json({ message: 'Invalid claim type' })
     }
 
+    const userRole = normalizeRole(req.user.role)
+
     await expireOverdueClaimsForUser(userId)
 
-    if (CLAIM_TO_ROLE[claimType] !== req.user.role) {
+    if (CLAIM_TO_ROLE[claimType] !== userRole) {
       return res.status(403).json({
         message: `Role ${req.user.role} cannot claim ${claimType} tasks`
       })
     }
 
-    if (claimType === 'audio' && req.user.role === 'recorder') {
+    if (claimType === 'audio' && userRole === 'recorder') {
       const pendingRevisionTask = await findPendingRecorderRevisionTask(userId)
       if (pendingRevisionTask) {
         return res.status(400).json({
@@ -447,6 +498,7 @@ const getAvailableBooks = async (req, res) => {
     }
 
     const userLanguage = req.user.language
+    const userRole = normalizeRole(req.user.role)
     const allowedClaimTypeByRole = {
       translator: 'translation',
       checker: 'checking',
@@ -461,12 +513,12 @@ const getAvailableBooks = async (req, res) => {
       recorder: ['audio_generation']
     }
 
-    const claimType = allowedClaimTypeByRole[req.user.role]
+    const claimType = allowedClaimTypeByRole[userRole]
     if (!claimType) {
       return res.status(403).json({ message: 'Your role cannot claim tasks' })
     }
 
-    if (req.user.role === 'recorder') {
+    if (userRole === 'recorder') {
       const pendingRevisionTask = await findPendingRecorderRevisionTask(req.user._id)
       if (pendingRevisionTask) {
         return res.status(200).json([])
@@ -477,10 +529,10 @@ const getAvailableBooks = async (req, res) => {
       language: userLanguage,
       isLocked: false,
       interestEmailSent: true,
-      currentStage: { $in: allowedStagesByRole[req.user.role] }
+      currentStage: { $in: allowedStagesByRole[userRole] }
     }
 
-    if (req.user.role === 'recorder') {
+    if (userRole === 'recorder') {
       elemMatchQuery.assignedRecorder = null
     }
 
@@ -498,7 +550,7 @@ const getAvailableBooks = async (req, res) => {
       description: book.description,
       claimType,
       version: book.languageVersions.find(v =>
-        v.language === userLanguage && allowedStagesByRole[req.user.role].includes(v.currentStage)
+        v.language === userLanguage && allowedStagesByRole[userRole].includes(v.currentStage)
       )
     }))
 
@@ -551,6 +603,7 @@ const getMyClaimHistory = async (req, res) => {
 
 module.exports = {
   sendInterestEmail,
+  notifyAllTranslatorsForBook,
   claimBook,
   getAvailableBooks,
   getMyClaim,

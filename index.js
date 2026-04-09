@@ -62,6 +62,9 @@ app.use('/api/notifications', notificationRoutes)
 const auditRoutes = require('./routes/auditRoutes')
 app.use('/api/audit', auditRoutes)
 
+const dashboardRoutes = require('./routes/dashboardRoutes')
+app.use('/api/dashboard', dashboardRoutes)
+
 // Test route
 app.get('/', (req, res) => {
   res.send('Shantikunj server is running!')

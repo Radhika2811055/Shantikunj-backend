@@ -1,5 +1,6 @@
 const jwt = require('jsonwebtoken')
 const User = require('../models/User')
+const { normalizeRole } = require('../utils/roleUtils')
 
 //Verify token 
 const protect = async (req, res, next) => {
@@ -32,7 +33,10 @@ const protect = async (req, res, next) => {
 //Check role
 const authorise = (...roles) => {
   return (req, res, next) => {
-    if (!roles.includes(req.user.role)) {
+    const userRole = normalizeRole(req.user.role)
+    const allowedRoles = roles.map((role) => normalizeRole(role))
+
+    if (!allowedRoles.includes(userRole)) {
       return res.status(403).json({ 
         message: `Access denied. Required role: ${roles.join(' or ')}` 
       })

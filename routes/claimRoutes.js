@@ -3,6 +3,7 @@ const router = express.Router()
 const { protect, authorise } = require('../middleware/authMiddleware')
 const {
   sendInterestEmail,
+  notifyAllTranslatorsForBook,
   claimBook,
   getAvailableBooks,
   getMyClaim,
@@ -13,6 +14,7 @@ router.use(protect)
 
 // Admin sends interest email
 router.post('/books/:bookId/send-interest', authorise('admin'), sendInterestEmail)
+router.post('/books/:bookId/notify-all-translators', authorise('admin'), notifyAllTranslatorsForBook)
 
 // User claims a book
 router.post('/books/:bookId/claim', authorise('translator', 'checker', 'audio_checker', 'recorder'), claimBook)

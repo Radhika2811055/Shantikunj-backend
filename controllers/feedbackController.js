@@ -1,9 +1,11 @@
 const Book = require('../models/Book')
 const Feedback = require('../models/Feedback')
 const { logAudit } = require('../services/auditService')
+const { normalizeRole } = require('../utils/roleUtils')
 
 const canSubmitFeedbackRole = (role) => {
-  return ['regional_team', 'translator', 'checker', 'audio_checker', 'recorder', 'spoc'].includes(role)
+  const normalizedRole = normalizeRole(role)
+  return ['regional_team', 'translator', 'checker', 'audio_checker', 'recorder', 'spoc'].includes(normalizedRole)
 }
 
 const isSameUserId = (value, userId) => {
@@ -14,18 +16,23 @@ const isSameUserId = (value, userId) => {
 const canViewFeedbackForVersion = (user, version) => {
   if (!user || !version) return false
 
-  if (user.role === 'admin') return true
-  if (user.role === 'spoc') return user.language === version.language
-  if (user.role === 'translator') return isSameUserId(version.assignedTranslator, user._id)
+  const normalizedRole = normalizeRole(user.role)
 
-  if (user.role === 'checker') {
+  if (normalizedRole === 'admin') return true
+  if (normalizedRole === 'spoc') return user.language === version.language
+  if (normalizedRole === 'translator') {
+    if (version.openForTranslatorReview) return true
+    return isSameUserId(version.assignedTranslator, user._id)
+  }
+
+  if (normalizedRole === 'checker') {
     return isSameUserId(version.assignedChecker, user._id)
   }
 
-  if (user.role === 'audio_checker') return isSameUserId(version.assignedAudioChecker, user._id)
+  if (normalizedRole === 'audio_checker') return isSameUserId(version.assignedAudioChecker, user._id)
 
-  if (user.role === 'recorder') return isSameUserId(version.assignedRecorder, user._id)
-  if (user.role === 'regional_team') return user.language === version.language
+  if (normalizedRole === 'recorder') return isSameUserId(version.assignedRecorder, user._id)
+  if (normalizedRole === 'regional_team') return user.language === version.language
 
   return false
 }
@@ -54,7 +61,11 @@ const submitFeedback = async (req, res) => {
     const version = book.languageVersions.id(versionId)
     if (!version) return res.status(404).json({ message: 'Language version not found' })
 
-    if (req.user.language !== version.language) {
+    const normalizedRole = normalizeRole(req.user.role)
+
+    const canTranslatorReviewAcrossLanguages = normalizedRole === 'translator' && Boolean(version.openForTranslatorReview)
+
+    if (!canTranslatorReviewAcrossLanguages && req.user.language !== version.language) {
       return res.status(403).json({ message: 'You can only submit feedback for your own language' })
     }
 

@@ -194,6 +194,14 @@ const languageVersionSchema = new mongoose.Schema({
     type: Date,
     default: null
   },
+  openForTranslatorReview: {
+    type: Boolean,
+    default: false
+  },
+  translatorReviewOpenedAt: {
+    type: Date,
+    default: null
+  },
   isBlockedBySpoc: {
     type: Boolean,
     default: false

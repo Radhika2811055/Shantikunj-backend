@@ -3,6 +3,7 @@ const Book = require('../models/Book')
 const User = require('../models/User')
 const sendMail = require('../config/mailer')
 const { createBulkNotifications } = require('../services/notificationService')
+const { getRoleQueryValues } = require('../utils/roleUtils')
 
 const CLAIM_ROLE_MAP = {
   translation: 'translator',
@@ -13,9 +14,9 @@ const CLAIM_ROLE_MAP = {
 
 const STAGE_LABEL = {
   translation: 'Translation',
-  checking: 'Text Verification',
+  checking: 'Text Vetter Review',
   audio: 'Audio Generation',
-  audio_check: 'Audio Verification'
+  audio_check: 'Audio Vetter Review'
 }
 
 const resetVersionForExpiredClaim = (version, claimType) => {
@@ -100,7 +101,7 @@ const sendFollowUps = async () => {
           const targetRole = CLAIM_ROLE_MAP[claim.claimType]
           const teamMembers = await User.find({
             language: claim.language,
-            role: targetRole,
+            role: { $in: getRoleQueryValues(targetRole) },
             status: 'approved',
             isActive: true
           }).select('_id name email')
