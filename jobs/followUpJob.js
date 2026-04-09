@@ -172,9 +172,9 @@ const sendFollowUps = async () => {
                 </strong>
               </div>
               ${daysLeft <= 2
-                ? `<p style="color: #E24B4A;"><strong>⚠️ Your deadline is approaching soon!</strong></p>`
-                : `<p>We hope your work is going well!</p>`
-              }
+              ? `<p style="color: #E24B4A;"><strong>⚠️ Your deadline is approaching soon!</strong></p>`
+              : `<p>We hope your work is going well!</p>`
+            }
               <p>If you need any assistance, please reach out to your admin or use the support system in the LMS.</p>
               <a href="http://localhost:5173" 
                  style="background: #1D9E75; color: white; padding: 12px 24px; 

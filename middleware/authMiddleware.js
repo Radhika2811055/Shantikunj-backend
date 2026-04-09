@@ -37,8 +37,8 @@ const authorise = (...roles) => {
     const allowedRoles = roles.map((role) => normalizeRole(role))
 
     if (!allowedRoles.includes(userRole)) {
-      return res.status(403).json({ 
-        message: `Access denied. Required role: ${roles.join(' or ')}` 
+      return res.status(403).json({
+        message: `Access denied. Required role: ${roles.join(' or ')}`
       })
     }
     next()

@@ -17,8 +17,8 @@ const userSchema = new mongoose.Schema({
     required: true
   },
   googleId: {
-  type: String,
-  default: null
+    type: String,
+    default: null
   },
   authMethod: {
     type: String,
@@ -74,8 +74,8 @@ const userSchema = new mongoose.Schema({
     default: false       // false until admin approves
   },
   resetToken: {
-  type: String,
-  default: null
+    type: String,
+    default: null
   },
   resetTokenExpiry: {
     type: Date,

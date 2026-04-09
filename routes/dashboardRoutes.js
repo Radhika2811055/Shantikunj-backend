@@ -2,8 +2,8 @@ const express = require('express')
 const router = express.Router()
 const { protect, authorise } = require('../middleware/authMiddleware')
 const {
-  getDashboardSummary,
-  getDashboardReviewQueue
+    getDashboardSummary,
+    getDashboardReviewQueue
 } = require('../controllers/dashboardController')
 
 router.use(protect)
